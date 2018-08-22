@@ -1,22 +1,19 @@
 import numpy as np
+import re
 from numpy import sin,cos,sqrt
-from pymol import cmd, cgo, CmdException
+from pymol import cmd, cgo
+from pymol.vfont import plain
+from seaborn import color_palette
 
+palette = color_palette('colorblind')
 
-colors = {
-    'axis_a': [27/255.,158/255.,119/255.],
-    'axis_b': [217/255.,95/255.,2/255.],
-    'axis_c': [117/255.,112/255.,179/255.]
-}
-
-for k in colors:
-    cmd.set_color(k, colors[k])
+for i,rgb in enumerate(palette):
+    cmd.set_color('color_{}'.format(chr(ord('a') + i)), rgb)
 
 def get_orthogonalization_matrix(objectname):
     """
-    get_orthogonalization_matrix(objectname -- string)
+    get_orthogonalization_matrix(objectname : string)
     """
-    print cmd.get_symmetry(objectname)
     a,b,c,alpha,beta,gamma,spacegroup = cmd.get_symmetry(objectname)
     alpha,beta,gamma=np.pi*alpha/180.,np.pi*beta/180.,np.pi*gamma/180.
 
@@ -32,13 +29,15 @@ def get_orthogonalization_matrix(objectname):
 
     return O
 
-def draw_cell(objectname, length=10.):
+def draw_cell(objectname, length=10., colorname=None, aspect=None, origin=None):
+    if aspect is not None:
+        aspect = float(aspect)
+    else:
+        aspect = 0.03
     length = float(length) #For safety
     O = get_orthogonalization_matrix(objectname)
     T = np.matrix(cmd.get_object_matrix(objectname)).reshape((4,4))
     T1,R,T2 = T[3,:-1],T[:3,:3],T[:-1,3].T
-    print cmd.get_object_matrix(objectname)
-
 
     o = np.matrix([0., 0., 0.]).T
     a = np.matrix([1., 0., 0.]).T
@@ -50,122 +49,73 @@ def draw_cell(objectname, length=10.):
     b = O*b
     c = O*c
 
-    print a.shape
     a = length*a/np.linalg.norm(a)
     b = length*b/np.linalg.norm(b)
     c = length*c/np.linalg.norm(c)
-
-    print a.shape
 
     o = T1 + o.T
     a = T1 + a.T
     b = T1 + b.T
     c = T1 + c.T
 
-    print a.shape
-
     o = R*o.T
     a = R*a.T
     b = R*b.T
     c = R*c.T
-
-    print a.shape
 
     o = T2 + o.T
     a = T2 + a.T
     b = T2 + b.T
     c = T2 + c.T
 
-    print a.shape
+
+    if origin is not None:
+        origin = re.sub(r'[^0-9,.]', '', origin)
+        origin = np.array(map(float, origin.split(',')))
+        a = a + (origin-o)
+        b = b + (origin-o)
+        c = c + (origin-o)
+        o = origin
+
     a = list(np.array(a).flatten())
     b = list(np.array(b).flatten())
     c = list(np.array(c).flatten())
     o = list(np.array(o).flatten())
 
-    print a
-    print b
-    print c
+    radius = length*aspect
 
-    cgo_arrow(o, a, color='axis_a', name=objectname + "_a")
-    cgo_arrow(o, b, color='axis_b', name=objectname + "_b")
-    cgo_arrow(o, c, color='axis_c', name=objectname + "_c")
+    obj = []
+    if colorname is None:
+        colorname = 'color_a'
+    obj += cgo_arrow(o, a, aspect=aspect, color=colorname)
+    obj += cgo_arrow(o, b, aspect=aspect, color=colorname)
+    obj += cgo_arrow(o, c, aspect=aspect, color=colorname)
+    cmd.load_cgo(obj, objectname + '_axis')
+    cmd.pseudoatom(objectname + '_labels', label = 'a', color=cmd.get_color_tuple(colorname), pos = affine(a, o, 1.1))
+    cmd.pseudoatom(objectname + '_labels', label = 'b', color=cmd.get_color_tuple(colorname), pos = affine(b, o, 1.1))
+    cmd.pseudoatom(objectname + '_labels', label = 'c', color=cmd.get_color_tuple(colorname), pos = affine(c, o, 1.1))
+    cmd.set("label_color", colorname, objectname + '_labels', )
+    cmd.set("label_size", 30, objectname + '_labels')
 
-'''
-http://pymolwiki.org/index.php/cgo_arrow
 
-(c) 2013 Thomas Holder, Schrodinger Inc.
+def cgo_arrow(a, b, aspect, hlen=None, color=None):
+    if hlen is None:
+        hlen = 0.1
+    if color is None:
+        color = 'color_a'
 
-License: BSD-2-Clause
-'''
+    m = affine(a, b, hlen)
+    length = np.linalg.norm(np.array(a) - np.array(b))
+    color = cmd.get_color_tuple(color)
+    color = list(color)
+    obj = [cgo.CYLINDER] + a + m + [aspect*length] + color + color +\
+          [cgo.CONE] + m + b + [0.5*hlen*length, 0.0] + color + color +\
+          [1.0, 0.]
 
-def cgo_arrow(atom1='pk1', atom2='pk2', radius=0.5, gap=0.0, hlength=-1, hradius=-1,
-              color='blue red', name=''):
-    '''
-DESCRIPTION
+    return obj
 
-    Create a CGO arrow between two picked atoms.
+def affine(a, b, theta):
+    c = theta*np.array(a) + (1. - theta)*np.array(b)
+    return list(np.array(c).flatten())
 
-ARGUMENTS
-
-    atom1 = string: single atom selection or list of 3 floats {default: pk1}
-
-    atom2 = string: single atom selection or list of 3 floats {default: pk2}
-
-    radius = float: arrow radius {default: 0.5}
-
-    gap = float: gap between arrow tips and the two atoms {default: 0.0}
-
-    hlength = float: length of head
-
-    hradius = float: radius of head
-
-    color = string: one or two color names {default: blue red}
-
-    name = string: name of CGO object
-    '''
-    from chempy import cpv
-
-    radius, gap = float(radius), float(gap)
-    hlength, hradius = float(hlength), float(hradius)
-
-    try:
-        color1, color2 = color.split()
-    except:
-        color1 = color2 = color
-    color1 = list(cmd.get_color_tuple(color1))
-    color2 = list(cmd.get_color_tuple(color2))
-
-    def get_coord(v):
-        if not isinstance(v, str):
-            return v
-        if v.startswith('['):
-            return cmd.safe_list_eval(v)
-        return cmd.get_atom_coords(v)
-
-    xyz1 = get_coord(atom1)
-    xyz2 = get_coord(atom2)
-    normal = cpv.normalize(cpv.sub(xyz1, xyz2))
-
-    if hlength < 0:
-        hlength = radius * 3.0
-    if hradius < 0:
-        hradius = hlength * 0.6
-
-    if gap:
-        diff = cpv.scale(normal, gap)
-        xyz1 = cpv.sub(xyz1, diff)
-        xyz2 = cpv.add(xyz2, diff)
-
-    xyz3 = cpv.add(cpv.scale(normal, hlength), xyz2)
-
-    obj = [cgo.CYLINDER] + xyz1 + xyz3 + [radius] + color1 + color2 + \
-          [cgo.CONE] + xyz3 + xyz2 + [hradius, 0.0] + color2 + color2 + \
-          [1.0, 0.0]
-
-    if not name:
-        name = cmd.get_unused_name('arrow')
-
-    cmd.load_cgo(obj, name)
-
-cmd.extend('cgo_arrow', cgo_arrow)
 cmd.extend('draw_cell', draw_cell)
